@@ -1,37 +1,58 @@
 import socket
-import sys
+import selectors
+import types
 
 HOST = '0.0.0.0'
 PORT = 1234
 
-def handle_request(conn, data):
-    # read request
-    msg = data.decode()
-    print(f'client says: {msg}')
+sel = selectors.DefaultSelector()
 
-    # send response
-    response = 'world'
-    conn.sendall(response.encode())
+# Handle listening socket
+def accept_wrapper(sock):
+    conn, addr = sock.recv(1024)
+    conn.setblocking(False)
+
+    data = types.SimpleNamespace(addr=addr, inb=b'', outb=b'')
+    events = selectors.EVENT_READ | selectors.EVENT_WRITE
+    sel.register(conn, events, data)
+
+# Handle client socket
+def service_connection(key, mask):
+    sock = key.fileobj
+    data = key.data
+
+    if mask & selectors.EVENT_READ:
+        recv_data = sock.recv(1024)
+        if recv_data:
+            data.outb += recv_data
+        else: # Close the connection
+            sel.unregister(sock)
+            sock.close()
+     
+    if mask & selectors.EVENT_WRITE:
+        if data.outb:
+            sent = sock.send(data.outb)
+            data.outb = data.outb[sent:]
 
 def start_server():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # Create listening socket
+    lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    lsock.bind((HOST, PORT))
+    lsock.listen()
 
-        s.bind((HOST, PORT))
-        s.listen()
+    # Register listening socket as a read event
+    lsock.setblocking(False)
+    sel.register(lsock, selectors.EVENT_READ, data=None)
 
-        while True:
-            conn, addr = s.accept()
+    while True:
+        events = sel.select(timeout=None)
+        for key, mask in events:
+            if key.data is None: # Is listening socket
+                accept_wrapper(key.fileobj)
+            else: # Is client socket
+                service_connection(key, mask)
 
-            print('connected by', addr)
-            with conn:
-                while True:
-                    data = conn.recv(1024)
-                    if not data:
-                        print('client disconnected')
-                        break
 
-                    handle_request(conn, data)
 
 if __name__ == '__main__':
     start_server() 
